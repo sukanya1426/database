@@ -1,13 +1,13 @@
 import numpy as np
 import pandas as pd
 import seaborn as sns
-import random
-from sklearn.model_selection import KFold
 from sklearn.metrics import f1_score, precision_score, recall_score
+from sklearn.model_selection import KFold
 
 # Load the iris dataset
 iris = sns.load_dataset("iris")
 # print(iris)
+
 # Function to check purity
 def check_purity(data):
     label_column = data[:, -1]
@@ -51,6 +51,7 @@ def calculate_entropy(data):
     label_column = data[:, -1]
     _, counts = np.unique(label_column, return_counts=True)
     probabilities = counts / counts.sum()
+    # exit(0)
     entropy = sum(probabilities * -np.log2(probabilities))
     return entropy
 
@@ -60,19 +61,55 @@ def calculate_overall_entropy(data_below, data_above):
     p_data_below = len(data_below) / n
     p_data_above = len(data_above) / n
     overall_entropy = (p_data_below * calculate_entropy(data_below) + p_data_above * calculate_entropy(data_above))
+    # exit(0)
     return overall_entropy
+
+# Function to calculate F-statistic
+def calculate_f_statistic(data, split_column, split_value):
+    try:
+        data_below, data_above = split_data(data, split_column, split_value)
+        overall_mean = np.mean(data[:, split_column])
+
+        n_below = len(data_below)
+        n_above = len(data_above)
+
+        mean_below = np.mean(data_below[:, split_column])
+        mean_above = np.mean(data_above[:, split_column])
+
+        ss_between = n_below * (mean_below - overall_mean) ** 2 + n_above * (mean_above - overall_mean) ** 2
+        ss_within = np.sum((data_below[:, split_column] - mean_below) ** 2) + np.sum((data_above[:, split_column] - mean_above) ** 2)
+
+        # Calculate F-statistic and handle potential division by zero
+        if ss_within == 0:
+            raise ZeroDivisionError # Raise ZeroDivisionError to be caught by the except block
+
+        f_statistic = ss_between / (ss_within / (n_below + n_above - 2))
+        return f_statistic
+
+    except ZeroDivisionError:
+        # Handle the ZeroDivisionError by skipping this split and returning None
+        return 999.999999999999999
 
 # Function to determine the best split
 def determine_best_split(data, potential_splits):
-    overall_entropy = 999
+    overall_metric = float('inf')
+    best_split_column = None
+    best_split_value = None
+
     for column_index in potential_splits:
         for value in potential_splits[column_index]:
+            # F-statistic calculation
+            # current_metric = calculate_f_statistic(data, column_index, value)
+
+            # Uncomment the following lines to use entropy instead:
             data_below, data_above = split_data(data, split_column=column_index, split_value=value)
-            current_overall_entropy = calculate_overall_entropy(data_below, data_above)
-            if current_overall_entropy <= overall_entropy:
-                overall_entropy = current_overall_entropy
+            current_metric = calculate_overall_entropy(data_below, data_above)
+
+            if current_metric < overall_metric:
+                overall_metric = current_metric
                 best_split_column = column_index
                 best_split_value = value
+
     return best_split_column, best_split_value
 
 # Decision tree algorithm
@@ -83,7 +120,7 @@ def decision_tree_algorithm(df, counter=0, min_samples=2, max_depth=5):
         data = df.values
     else:
         data = df
-        
+
     if (check_purity(data)) or (len(data) < min_samples) or (counter == max_depth):
         classification = classify_data(data)
         return classification
@@ -95,103 +132,81 @@ def decision_tree_algorithm(df, counter=0, min_samples=2, max_depth=5):
         feature_name = COLUMN_HEADERS[split_column]
         question = "{} <= {}".format(feature_name, split_value)
         sub_tree = {question: []}
+
         yes_answer = decision_tree_algorithm(data_below, counter, min_samples, max_depth)
         no_answer = decision_tree_algorithm(data_above, counter, min_samples, max_depth)
+
         if yes_answer == no_answer:
             sub_tree = yes_answer
         else:
             sub_tree[question].append(yes_answer)
             sub_tree[question].append(no_answer)
+
         return sub_tree
 
 # Function to classify examples
 def classify_example(example, tree):
-    question = list(tree.keys())[0]
-    feature_name, comparison_operator, value = question.split()
-    if example[feature_name] <= float(value):
-        answer = tree[question][0]
-    else:
-        answer = tree[question][1]
-    if not isinstance(answer, dict):
-        return answer
-    else:
-        residual_tree = answer
-        return classify_example(example, residual_tree)
+    # Check if tree is a dictionary (not a leaf node)
+    if isinstance(tree, dict):
+        question = list(tree.keys())[0]
+        feature_name, comparison_operator, value = question.split()
+        if example[feature_name] <= float(value):
+            answer = tree[question][0]
+        else:
+            answer = tree[question][1]
+        if not isinstance(answer, dict):
+            return answer
+        else:
+            residual_tree = answer
+            return classify_example(example, residual_tree)
+    else:  # If tree is a string (leaf node), directly return the classification
+        return tree
 
-# Updated function to calculate accuracy
-def calculate_accuracy(df, tree):
-    df = df.copy()  # Ensure a copy of the DataFrame is used
+# Updated function to calculate accuracy and F1, F2 measures
+def calculate_metrics(df, tree):
+    df = df.copy()
     df["classification"] = df.apply(classify_example, axis=1, args=(tree,))
-    df["classification_correct"] = df["classification"] == df["species"]
+    df["classification_correct"] = (df["classification"] == df["species"])
+
+    y_true = df["species"]
+    y_pred = df["classification"]
+
     accuracy = df["classification_correct"].mean()
-    return accuracy
+    f1 = f1_score(y_true, y_pred, average='macro')
+    precision = precision_score(y_true, y_pred, average='macro')
+    recall = recall_score(y_true, y_pred, average='macro')
+
+    f2 = (1 + 2**2) * (precision * recall) / ((2**2 * precision) + recall)
+
+    return accuracy, f1, f2
 
 # k-Fold Cross-Validation
 def k_fold_cross_validation(dataframe, k):
-    kf = KFold(n_splits=k, shuffle=True)  # No fixed random_state
+    kf = KFold(n_splits=k, shuffle=True)
     accuracies = []
     f1_scores = []
     f2_scores = []
-    
+
     for train_index, test_index in kf.split(dataframe):
         train_df = dataframe.iloc[train_index]
         test_df = dataframe.iloc[test_index]
 
         tree = decision_tree_algorithm(train_df, max_depth=3)
-        accuracy = calculate_accuracy(test_df, tree)
+        accuracy, f1, f2 = calculate_metrics(test_df, tree)
+
         accuracies.append(accuracy)
-        f1, f2 = calculate_f1_f2_scores(test_df, tree)
         f1_scores.append(f1)
         f2_scores.append(f2)
-        print(f"F1 Score: {f1 * 100:.2f}%")
-        print(f"F2 Score: {f2 * 100:.2f}%")
-        print(f"Accuracy: {accuracy * 100:.2f}%")
-    
-    average_accuracy = np.mean(accuracies)
-    average_f1 = np.mean(f1_scores)
-    average_f2 = np.mean(f2_scores)
-    print(f"Average F1 Score over {k} folds: {average_f1 * 100:.2f}%")
-    print(f"Average F2 Score over {k} folds: {average_f2 * 100:.2f}%")
-    print(f"Average accuracy over {k} folds: {average_accuracy * 100:.2f}%")
-    
-def testing(example, tree):
-    question = list(tree.keys())[0]
-    feature_name, comparison_operator, value = question.split()
 
-    # check for answer
-    if example[COLUMN_HEADERS.get_loc(feature_name)] <= float(value):
-        answer = tree[question][0]
-    else:
-        answer = tree[question][1]
+        print(f"Accuracy: {accuracy:.2f}\nF1 Score: {f1:.2f}\nF2 Score: {f2:.2f}\n")
 
-    # base case
-    if not isinstance(answer, dict):
-        return answer
-    # recursive part
-    else:
-        residual_tree = answer
-        return testing(example, residual_tree)
+    avg_accuracy = np.mean(accuracies)
+    avg_f1 = np.mean(f1_scores)
+    avg_f2 = np.mean(f2_scores)
 
-def get_input_features():
-    input_features = []
-    for i in range(len(COLUMN_HEADERS) - 1):  # Exclude the last column (species)
-        feature_name = COLUMN_HEADERS[i]
-        value = float(input("Enter value for {}: ".format(feature_name)))
-        input_features.append(value)
-    return input_features
+    print(f"Average Accuracy over {k} folds: {avg_accuracy * 100:.2f}%")
+    print(f"Average F1 Score over {k} folds: {avg_f1 * 100:.2f}%")
+    print(f"Average F2 Score over {k} folds: {avg_f2 * 100:.2f}%")
 
-def calculate_f1_f2_scores(df, tree):
-    df = df.copy()
-    df["classification"] = df.apply(classify_example, axis=1, args=(tree,))
-    y_true = df["species"]
-    y_pred = df["classification"]
-
-    f1 = f1_score(y_true, y_pred, average='macro')
-    precision = precision_score(y_true, y_pred, average='macro')
-    recall = recall_score(y_true, y_pred, average='macro')
-    f2 = (5 * precision * recall) / (4 * precision + recall) 
-    return f1, f2
-
-
-k = 10
-average_accuracy = k_fold_cross_validation(iris, k)
+k = 5
+k_fold_cross_validation(iris, k)
